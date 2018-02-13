@@ -28,6 +28,9 @@ import (
 const overseerTag = "sonm.overseer"
 const dieEvent = "die"
 
+const bridgeNetwork = "bridge"
+const tincNetwork = "tinc"
+
 // Description for a target application.
 type Description struct {
 	Registry      string
@@ -45,6 +48,9 @@ type Description struct {
 
 	volumes map[string]*pb.Volume
 	mounts  []volume.Mount
+
+	networkType  string
+	networkParam map[string]string
 }
 
 func (d *Description) ID() string {
@@ -61,6 +67,17 @@ func (d *Description) Mounts(source string) []volume.Mount {
 
 func (d *Description) GPU() bool {
 	return d.GPURequired
+}
+
+func (d *Description) NetworkType() string {
+	if len(d.networkType) == 0 {
+		return bridgeNetwork
+	}
+	return d.networkType
+}
+
+func (d *Description) NetworkParam() map[string]string {
+	return d.networkParam
 }
 
 func (d *Description) FormatEnv() []string {

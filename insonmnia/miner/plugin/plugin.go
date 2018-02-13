@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/moby/moby/api/types/network"
 	log "github.com/noxiouz/zapctx/ctxlog"
 	"github.com/sonm-io/core/insonmnia/miner/gpu"
 	"github.com/sonm-io/core/insonmnia/miner/volume"
@@ -16,6 +17,7 @@ import (
 type Provider interface {
 	GPUProvider
 	VolumeProvider
+	NetworkProvider
 }
 
 // GPUProvider describes an interface for applying GPU settings to the
@@ -33,6 +35,13 @@ type VolumeProvider interface {
 	// Mounts returns all mounts whose source equals to the volume name
 	// provided.
 	Mounts(source string) []volume.Mount
+}
+
+type NetworkProvider interface {
+	// NetworkType returns a network driver name used to establish networking.
+	NetworkType() string
+	// NetworkOptions return configuration map, passed directly to network driver, this map should not be mutated.
+	NetworkOptions() map[string]string
 }
 
 // Repository describes a place where all SONM plugins for Docker live.
@@ -85,6 +94,10 @@ func NewRepository(ctx context.Context, cfg Config) (*Repository, error) {
 		r.gpuTuners[typeID] = tuner
 	}
 
+	if cfg.Tinc != nil {
+		r.
+	}
+
 	return r, nil
 }
 
@@ -98,16 +111,28 @@ func EmptyRepository() *Repository {
 
 // Tune creates all plugin bound required for the given provider with further
 // host config tuning.
-func (r *Repository) Tune(provider Provider, cfg *container.HostConfig) (Cleanup, error) {
+func (r *Repository) Tune(provider Provider, hostCfg *container.HostConfig, netCfg *network.NetworkingConfig) (Cleanup, error) {
 	// Do not specify GPU type right now,
 	// just check that GPU is required
 	if provider.GPU() {
-		if err := r.TuneGPU(provider, cfg); err != nil {
+		if err := r.TuneGPU(provider, hostCfg); err != nil {
 			return nil, err
 		}
 	}
+	cleanup := newNestedCleanup()
+	c, err := r.TuneVolumes(provider, hostCfg)
+	if err != nil {
+		return nil, err
+	}
+	cleanup.Add(c)
 
-	return r.TuneVolumes(provider, cfg)
+	c, err = r.TuneNetworks(provider, netCfg)
+	if err != nil {
+		cleanup.Close()
+		return nil, err
+	}
+	cleanup.Add(c)
+	return cleanup, nil
 }
 
 // HasGPU returns true if the Repository has at least one GPU plugin loaded
@@ -177,6 +202,10 @@ func (r *Repository) TuneVolumes(provider VolumeProvider, cfg *container.HostCon
 	}
 
 	return &cleanup, nil
+}
+
+func (r *Repository) TuneNetworks(provider NetworkProvider, cfg *network.NetworkingConfig) (Cleanup, error) {
+
 }
 
 func (r *Repository) Close() error {
