@@ -19,6 +19,7 @@ HUB=sonmhub
 CLI=sonmcli
 LOCATOR=sonmlocator
 LOCAL_NODE=sonmnode
+RENDEZVOUS=sonmrendezvous
 
 TAGS=nocgo
 
@@ -59,6 +60,12 @@ build/hub:
 	@echo "+ $@"
 	${GO} build -tags "$(TAGS)" -ldflags "-s $(LDFLAGS)" -o ${HUB} ${GOCMD}/hub
 
+build/rv:
+	@echo "+ $@"
+	${GO} build -tags "$(TAGS)" -o ${RENDEZVOUS} ${GOCMD}/rv
+
+build/rendezvous: build/rv
+
 build/cli:
 	@echo "+ $@"
 	${GO} build -tags "$(TAGS)" -ldflags "-s $(LDFLAGS)" -o ${CLI} ${GOCMD}/cli
@@ -76,7 +83,7 @@ build/node_win32:
 	GOOS=windows GOARCH=386 ${GO} build -tags "$(TAGS)" -ldflags "-s $(LDFLAGS).win32" -o ${LOCAL_NODE}_win32.exe ${GOCMD}/node
 
 
-build/insomnia: build/hub build/miner build/cli build/node
+build/insomnia: build/hub build/miner build/cli build/node build/rv
 
 build/aux: build/locator
 
