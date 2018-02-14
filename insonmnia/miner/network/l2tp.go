@@ -2,13 +2,15 @@ package network
 
 import (
 	"context"
-	"errors"
+	"fmt"
+	"os/exec"
 	"sync"
 
-	"fmt"
+	"io/ioutil"
 
 	"github.com/docker/go-plugins-helpers/network"
 	log "github.com/noxiouz/zapctx/ctxlog"
+	"github.com/pkg/errors"
 	"go.uber.org/zap"
 )
 
@@ -16,24 +18,13 @@ const (
 	XL2tpRunDir      = "/var/run/xl2tpd"
 	XL2tpControlFile = "/var/run/xl2tpd/l2tp-control"
 	PPPOptsDir       = "/etc/ppp/"
-	PPPOptsDefaukt   = `ipcp-accept-local  
-ipcp-accept-remote  
-refuse-eap  
-require-mschap-v2  
-noccp  
-noauth  
-idle 1800  
-mtu 1410  
-mru 1410  
-defaultroute  
-usepeerdns  
-debug  
-lock  
-connect-delay 5000`
 )
 
 func NewL2TPDriver(ctx context.Context) *L2TPDriver {
-	return &L2TPDriver{ctx: ctx}
+	return &L2TPDriver{
+		ctx:      ctx,
+		networks: make(map[string]*networkInfo),
+	}
 }
 
 type L2TPDriver struct {
@@ -43,12 +34,11 @@ type L2TPDriver struct {
 }
 
 func (d *L2TPDriver) GetCapabilities() (*network.CapabilitiesResponse, error) {
-	return &network.CapabilitiesResponse{
-		Scope:             "global",
-		ConnectivityScope: "global",
-	}, nil
 	log.G(d.ctx).Info("received  request", zap.Any("request", nil))
-	return nil, nil
+	return &network.CapabilitiesResponse{
+		Scope:             "local",
+		ConnectivityScope: "local",
+	}, nil
 }
 
 func (d *L2TPDriver) CreateNetwork(request *network.CreateNetworkRequest) error {
@@ -67,13 +57,25 @@ func (d *L2TPDriver) CreateNetwork(request *network.CreateNetworkRequest) error 
 		return errors.New("network already exists")
 	}
 
-	for optName, optVal := range request.Options {
+	rawOpts, ok := request.Options["com.docker.network.generic"]
+	if !ok {
+		log.G(d.ctx).Error("no options provided")
+		return errors.New("no options provided")
+	}
+
+	opts, ok := rawOpts.(map[string]interface{})
+	if !ok {
+		log.G(d.ctx).Error("invalid options")
+		return errors.New("invalid options")
+	}
+
+	for optName, optVal := range opts {
 		switch optName {
 		case "lns_addr":
 			if optValTyped, ok := optVal.(string); ok {
 				netInfo.LNSAddr = optValTyped
 			} else {
-				log.G(d.ctx).Warn("invalid option value", zap.String("option_name", optName),
+				log.G(d.ctx).Error("invalid option value", zap.String("option_name", optName),
 					zap.Any("option_value", optVal))
 				return fmt.Errorf("invalid value for option %s: %s", optName, optVal)
 			}
@@ -81,7 +83,7 @@ func (d *L2TPDriver) CreateNetwork(request *network.CreateNetworkRequest) error 
 			if optValTyped, ok := optVal.(string); ok {
 				netInfo.PPPUsername = optValTyped
 			} else {
-				log.G(d.ctx).Warn("invalid option value", zap.String("option_name", optName),
+				log.G(d.ctx).Error("invalid option value", zap.String("option_name", optName),
 					zap.Any("option_value", optVal))
 				return fmt.Errorf("invalid value for option %s: %s", optName, optVal)
 			}
@@ -89,7 +91,7 @@ func (d *L2TPDriver) CreateNetwork(request *network.CreateNetworkRequest) error 
 			if optValTyped, ok := optVal.(string); ok {
 				netInfo.PPPPassword = optValTyped
 			} else {
-				log.G(d.ctx).Warn("invalid option value", zap.String("option_name", optName),
+				log.G(d.ctx).Error("invalid option value", zap.String("option_name", optName),
 					zap.Any("option_value", optVal))
 				return fmt.Errorf("invalid value for option %s: %s", optName, optVal)
 			}
@@ -100,7 +102,29 @@ func (d *L2TPDriver) CreateNetwork(request *network.CreateNetworkRequest) error 
 		return err
 	}
 
+	var (
+		pppConfig = netInfo.getPPPConfig()
+		xl2tpdCfg = netInfo.getXl2tpConfig()
+		cmd       = exec.Command("xl2tpd-control", "add", netInfo.InternalName, xl2tpdCfg)
+	)
+
+	if err := ioutil.WriteFile(netInfo.PPPOptFile, []byte(pppConfig), 0644); err != nil {
+		log.G(d.ctx).Error("failed to create PPP config file", zap.String("network_id", netInfo.ID),
+			zap.Any("config", xl2tpdCfg), zap.Error(err))
+		return errors.Wrapf(err, "failed to add xl2tpd config for network %s, config is `%s`",
+			netInfo.ID, xl2tpdCfg)
+	}
+
+	if err := cmd.Run(); err != nil {
+		log.G(d.ctx).Error("failed to add xl2tpd config", zap.String("network_id", netInfo.ID),
+			zap.Any("config", xl2tpdCfg), zap.Error(err))
+		return errors.Wrapf(err, "failed to add xl2tpd config for network %s, config is `%s`",
+			netInfo.ID, xl2tpdCfg)
+	}
+
 	d.networks[netInfo.ID] = netInfo
+
+	log.G(d.ctx).Info("successfully registered network", zap.String("network_id", netInfo.ID))
 
 	return nil
 }
@@ -140,8 +164,8 @@ func (d *L2TPDriver) EndpointInfo(request *network.InfoRequest) (*network.InfoRe
 
 func (d *L2TPDriver) Join(request *network.JoinRequest) (*network.JoinResponse, error) {
 	log.G(d.ctx).Info("received Join request", zap.Any("request", request))
-	//return nil, nil
-	return &network.JoinResponse{DisableGatewayService: true, InterfaceName: network.InterfaceName{SrcName: "netname", DstPrefix: "pidor"}}, nil
+	return nil, nil
+	//return &network.JoinResponse{DisableGatewayService: true, InterfaceName: network.InterfaceName{SrcName: "netname", DstPrefix: "pidor"}}, nil
 }
 
 func (d *L2TPDriver) Leave(request *network.LeaveRequest) error {
@@ -170,9 +194,10 @@ func (d *L2TPDriver) RevokeExternalConnectivity(request *network.RevokeExternalC
 }
 
 type networkInfo struct {
-	ID       string
-	IPv4Data []*network.IPAMData
-	IPv6Data []*network.IPAMData
+	ID           string
+	InternalName string
+	IPv4Data     []*network.IPAMData
+	IPv6Data     []*network.IPAMData
 
 	LNSAddr     string
 	PPPOptFile  string
@@ -181,6 +206,45 @@ type networkInfo struct {
 }
 
 func (i *networkInfo) setup() error {
-	i.PPPOptFile = PPPOptsDir + i.ID[5:]
+	if len(i.LNSAddr) == 0 {
+		return errors.New("lsn address not provided")
+	}
+
+	if len(i.PPPUsername) == 0 {
+		return errors.New("ppp username not provided")
+	}
+
+	if len(i.PPPPassword) == 0 {
+		return errors.New("ppp password not provided")
+	}
+
+	i.PPPOptFile = PPPOptsDir + i.ID[5:] + ".client"
+
 	return nil
+}
+
+func (i *networkInfo) getPPPConfig() string {
+	cfg := `ipcp-accept-local  
+ipcp-accept-remote  
+refuse-eap  
+require-mschap-v2  
+noccp  
+noauth  
+idle 1800  
+mtu 1410  
+mru 1410  
+defaultroute  
+usepeerdns  
+debug  
+lock  
+connect-delay 5000`
+
+	cfg += fmt.Sprintf("\nname %s", i.PPPUsername)
+	cfg += fmt.Sprintf("\npassword %s", i.PPPPassword)
+
+	return cfg
+}
+
+func (i *networkInfo) getXl2tpConfig() string {
+	return fmt.Sprintf("lns=%s pppoptfile=%s", i.LNSAddr, i.PPPOptFile)
 }
