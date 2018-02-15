@@ -24,6 +24,7 @@ import (
 	"github.com/sonm-io/core/insonmnia/gateway"
 	"github.com/sonm-io/core/insonmnia/hardware/gpu"
 	"github.com/sonm-io/core/insonmnia/math"
+	"github.com/sonm-io/core/insonmnia/npp"
 	"github.com/sonm-io/core/insonmnia/resource"
 	"github.com/sonm-io/core/insonmnia/structs"
 	pb "github.com/sonm-io/core/proto"
@@ -1354,6 +1355,22 @@ func (h *Hub) onNewHub(endpoint string) {
 // with miners
 func (h *Hub) Serve() error {
 	h.startTime = time.Now()
+
+	{
+		endpoint, err := auth.NewEndpoint("0x28ba1d828C4B6a73a8641f62083c8Ce7B869D04C@138.68.189.138:14099")
+		if err != nil {
+			return err
+		}
+
+		listener, err := npp.NewListener(h.ctx, "0.0.0.0:16000", npp.WithRendezvous(*endpoint, h.creds))
+		if err != nil {
+			log.G(h.ctx).Error("failed to listen", zap.String("address", h.cfg.Endpoint), zap.Error(err))
+			return err
+		}
+		h.waiter.Go(func() error {
+			return h.externalGrpc.Serve(listener)
+		})
+	}
 
 	listener, err := net.Listen("tcp", h.cfg.Endpoint)
 	if err != nil {

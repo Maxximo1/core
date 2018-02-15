@@ -11,12 +11,21 @@ import (
 	"google.golang.org/grpc/credentials"
 )
 
+// TODO
 type Option func(o *options) error
 
 type options struct {
 	ctx       context.Context
 	localAddr net.Addr
 	client    rendezvous.Client
+}
+
+// TODO
+func newOptions(ctx context.Context, addr net.Addr) *options {
+	return &options{
+		ctx:       ctx,
+		localAddr: addr,
+	}
 }
 
 // WithRendezvous is an option that specifies Rendezvous client settings.

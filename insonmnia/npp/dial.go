@@ -25,10 +25,7 @@ type Dialer struct {
 
 // TODO
 func NewDialer(ctx context.Context, options ...Option) (*Dialer, error) {
-	opts := &options{
-		ctx:       ctx,
-		localAddr: &net.TCPAddr{},
-	}
+	opts := newOptions(ctx, &net.TCPAddr{})
 
 	for _, o := range options {
 		if err := o(opts); err != nil {
@@ -100,7 +97,8 @@ func (m *Dialer) punch(ctx context.Context, addrs *sonm.ConnectReply) (net.Conn,
 		waiter <- newConnTuple(nil, fmt.Errorf("failed to punch the network: all attempts has failed: %+v", errs))
 	}()
 
-	return (<-waiter).unwrap()
+	conn := <-waiter
+	return conn.unwrap()
 }
 
 func (m *Dialer) punchAddr(ctx context.Context, addr *sonm.Addr) (net.Conn, error) {

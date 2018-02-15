@@ -34,6 +34,7 @@ import (
 	"net"
 	"sync"
 
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/sonm-io/core/insonmnia/auth"
 	"github.com/sonm-io/core/proto"
 	"github.com/sonm-io/core/util/xgrpc"
@@ -51,33 +52,52 @@ type peerCandidate struct {
 type meeting struct {
 	mu sync.Mutex
 	// We allow multiple clients to be waited for servers.
-	clients []peerCandidate
+	clients map[PeerID]peerCandidate
 	// Also we allow the opposite: multiple servers can be registered for
 	// fault tolerance.
-	servers []peerCandidate
+	servers map[PeerID]peerCandidate
 }
 
 func newMeeting() *meeting {
 	return &meeting{
-		servers: []peerCandidate{},
-		clients: []peerCandidate{},
+		servers: map[PeerID]peerCandidate{},
+		clients: map[PeerID]peerCandidate{},
 	}
 }
 
 func (m *meeting) addServer(peer Peer, c chan<- Peer) {
-	m.servers = append(m.servers, peerCandidate{Peer: peer, C: c})
+	m.servers[peer.ID] = peerCandidate{Peer: peer, C: c}
 }
 
 func (m *meeting) addClient(peer Peer, c chan<- Peer) {
-	m.clients = append(m.clients, peerCandidate{Peer: peer, C: c})
+	m.clients[peer.ID] = peerCandidate{Peer: peer, C: c}
 }
 
 func (m *meeting) RandomServer() *peerCandidate {
-	return &m.servers[rand.Intn(len(m.servers))]
+	if len(m.servers) == 0 {
+		return nil
+	}
+
+	var keys []PeerID
+	for key := range m.servers {
+		keys = append(keys, key)
+	}
+
+	v := m.servers[keys[rand.Intn(len(keys))]]
+	return &v
 }
 
 func (m *meeting) RandomClient() *peerCandidate {
-	return &m.clients[rand.Intn(len(m.clients))]
+	if len(m.clients) == 0 {
+		return nil
+	}
+	var keys []PeerID
+	for key := range m.clients {
+		keys = append(keys, key)
+	}
+
+	v := m.clients[keys[rand.Intn(len(keys))]]
+	return &v
 }
 
 func (m *meeting) Servers() []Peer {
@@ -88,6 +108,8 @@ func (m *meeting) Servers() []Peer {
 	return peers
 }
 
+// TODO
+// TODO: When resolving it's necessary to track also IP version. For example to be able not to return IPv6 when connecting socket is IPv4.
 type Server struct {
 	cfg    Config
 	log    *zap.Logger
@@ -97,6 +119,8 @@ type Server struct {
 	rv map[string]*meeting
 }
 
+// NewServer constructs a new rendezvous server using specified config and options.
+// TODO: More.
 func NewServer(cfg Config, options ...Option) (*Server, error) {
 	opts := newOptions()
 	for _, option := range options {
@@ -114,6 +138,10 @@ func NewServer(cfg Config, options ...Option) (*Server, error) {
 		rv: map[string]*meeting{},
 	}
 
+	server.log.Debug("configured authentication settings",
+		zap.Stringer("eth", crypto.PubkeyToAddress(cfg.PrivateKey.PublicKey)),
+	)
+
 	sonm.RegisterRendezvousServer(server.server, server)
 	return server, nil
 }
@@ -128,10 +156,13 @@ func (s *Server) Resolve(ctx context.Context, request *sonm.ConnectRequest) (*so
 		return nil, errors.New("no peer info provided")
 	}
 
-	id := request.ID
-	defer s.unpublish(id)
+	s.log.Info("resolving remote peer", zap.String("id", request.ID))
 
-	c := s.newServerWatch(id, NewPeer(*peerInfo, request.PrivateAddrs))
+	id := request.ID
+	peerHandle := NewPeer(*peerInfo, request.PrivateAddrs)
+
+	c := s.newServerWatch(id, peerHandle)
+	defer s.removeServerWatch(id, peerHandle)
 
 	select {
 	case <-ctx.Done():
@@ -152,10 +183,13 @@ func (s *Server) Publish(ctx context.Context, request *sonm.PublishRequest) (*so
 		return nil, err
 	}
 
-	id := ethAddr.String()
-	defer s.unpublish(id)
+	s.log.Info("publishing remote peer", zap.String("id", ethAddr.String()))
 
-	c := s.newClientWatch(id, NewPeer(*peerInfo, request.PrivateAddrs))
+	id := ethAddr.String()
+	peerHandle := NewPeer(*peerInfo, request.PrivateAddrs)
+
+	c := s.newClientWatch(id, peerHandle)
+	defer s.removeClientWatch(id, peerHandle)
 
 	select {
 	case <-ctx.Done():
@@ -212,12 +246,24 @@ func (s *Server) newClientWatch(id string, peer Peer) <-chan Peer {
 	return c
 }
 
-func (s *Server) unpublish(id string) {
-	// TODO: Bug! Unpublish only client or server, not ID.
+func (s *Server) removeClientWatch(id string, peer Peer) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	delete(s.rv, id)
+	candidates, ok := s.rv[id]
+	if ok {
+		delete(candidates.servers, peer.ID)
+	}
+}
+
+func (s *Server) removeServerWatch(id string, peer Peer) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	candidates, ok := s.rv[id]
+	if ok {
+		delete(candidates.clients, peer.ID)
+	}
 }
 
 func newConnectReply(peer Peer) (*sonm.ConnectReply, error) {

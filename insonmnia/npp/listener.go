@@ -45,10 +45,7 @@ func NewListener(ctx context.Context, addr string, options ...Option) (net.Liste
 		return nil, err
 	}
 
-	opts := &options{
-		ctx:       ctx,
-		localAddr: listener.Addr(),
-	}
+	opts := newOptions(ctx, listener.Addr())
 
 	for _, o := range options {
 		if err := o(opts); err != nil {
@@ -183,7 +180,8 @@ func (m *Listener) punch(addrs *sonm.PublishReply) (net.Conn, error) {
 		waiter <- newConnTuple(nil, fmt.Errorf("failed to punch the network: all attempts has failed: %+v", errs))
 	}()
 
-	return (<-waiter).unwrap()
+	conn := <-waiter
+	return conn.unwrap()
 }
 
 func (m *Listener) punchAddr(ctx context.Context, addr *sonm.Addr) (net.Conn, error) {

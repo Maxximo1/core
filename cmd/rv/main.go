@@ -28,7 +28,7 @@ func start() {
 		os.Exit(1)
 	}
 
-	ctx := log.WithLogger(context.Background(), logging.BuildLogger(0, true))
+	ctx := log.WithLogger(context.Background(), logging.BuildLogger(-1, true))
 
 	certRotator, TLSConfig, err := util.NewHitlessCertRotator(ctx, cfg.PrivateKey)
 	if err != nil {
