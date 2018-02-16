@@ -11,17 +11,31 @@ import (
 
 type TincTuner struct {
 	client *client.Client
+	driver *TincNetworkDriver
 }
 
-func NewTincTuner(config *plugin.TincNetworkConfig) (*TincTuner, error) {
+type TincCleaner struct {
+	networkID string
+	client    *client.Client
+}
+
+func NewTincTuner(ctx context.Context, config *plugin.TincNetworkConfig) (*TincTuner, error) {
 	cli, err := client.NewEnvClient()
 	if err != nil {
 		return nil, err
 	}
-	return &TincTuner{client: cli}, nil
+	driver, err := NewTincNetworkDriver(ctx, config)
+	if err != nil {
+		return nil, err
+	}
+	return &TincTuner{
+		client: cli,
+		driver: driver,
+	}, nil
 }
 
-func (t *TincTuner) Tune(ctx context.Context, net plugin.Network, config *network.NetworkingConfig) (plugin.Cleanup, error) {
+//TODO: pass context from outside
+func (t *TincTuner) Tune(net plugin.Network, config *network.NetworkingConfig) (plugin.Cleanup, error) {
 	createOpts := types.NetworkCreate{
 		Driver:  "tinc",
 		Options: net.NetworkOptions(),
@@ -33,9 +47,9 @@ func (t *TincTuner) Tune(ctx context.Context, net plugin.Network, config *networ
 		}
 		createOpts.IPAM.Config = append(createOpts.IPAM.Config, network.IPAMConfig{Subnet: net.NetworkCIDR()})
 	}
-	response, err := t.client.NetworkCreate(ctx, net.ID(), createOpts)
+	response, err := t.client.NetworkCreate(context.Background(), net.ID(), createOpts)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if config.EndpointsConfig == nil {
 		config.EndpointsConfig = make(map[string]*network.EndpointSettings)
@@ -44,5 +58,12 @@ func (t *TincTuner) Tune(ctx context.Context, net plugin.Network, config *networ
 		}
 	}
 
-	return nil
+	return &TincCleaner{
+		client:    t.client,
+		networkID: response.ID,
+	}, nil
+}
+
+func (t *TincCleaner) Close() error {
+	return t.client.NetworkRemove(context.Background(), t.networkID)
 }

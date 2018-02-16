@@ -15,7 +15,7 @@ import (
 	"go.uber.org/zap"
 )
 
-func NewTincNetworkDriver(ctx context.Context, config plugin.TincNetworkConfig) (*TincNetworkDriver, error) {
+func NewTincNetworkDriver(ctx context.Context, config *plugin.TincNetworkConfig) (*TincNetworkDriver, error) {
 	err := os.MkdirAll(config.ConfigDir, 0770)
 	if err != nil {
 		return nil, err
@@ -43,7 +43,7 @@ type TincNetwork struct {
 
 type TincNetworkDriver struct {
 	ctx      context.Context
-	config   plugin.TincNetworkConfig
+	config   *plugin.TincNetworkConfig
 	mu       sync.RWMutex
 	networks map[string]*TincNetwork
 }

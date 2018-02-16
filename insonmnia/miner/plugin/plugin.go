@@ -110,7 +110,7 @@ func NewRepository(ctx context.Context, cfg Config) (*Repository, error) {
 	}
 
 	if cfg.Tinc != nil {
-		tincTuner, err := minet.NewTincTuner(cfg.Tinc)
+		tincTuner, err := minet.NewTincTuner(ctx, cfg.Tinc)
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize tinc tuner - %v", err)
 		}
@@ -224,10 +224,22 @@ func (r *Repository) TuneVolumes(provider VolumeProvider, cfg *container.HostCon
 }
 
 func (r *Repository) TuneNetworks(provider NetworkProvider, cfg *network.NetworkingConfig) (Cleanup, error) {
+	cleanup := newNestedCleanup()
 	networks := provider.Networks()
-	for _, net := networks {
-		tuner, ok := r.networkTuners[provider]
+	for _, net := range networks {
+		tuner, ok := r.networkTuners[net.NetworkType()]
+		if !ok {
+			cleanup.Close()
+			return nil, fmt.Errorf("network driver not supported: %s", net.NetworkType())
+		}
+		c, err := tuner.Tune(net, cfg)
+		if err != nil {
+			cleanup.Close()
+			return nil, err
+		}
+		cleanup.Add(c)
 	}
+	return &cleanup, nil
 }
 
 func (r *Repository) Close() error {
