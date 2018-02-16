@@ -123,15 +123,23 @@ func (h *Hub) Ping(ctx context.Context, _ *pb.Empty) (*pb.PingReply, error) {
 
 // Status returns internal hub statistic
 func (h *Hub) Status(ctx context.Context, _ *pb.Empty) (*pb.HubStatusReply, error) {
+	clients, workers, err := h.collectEndpoints()
+	if err != nil {
+		log.G(h.ctx).Warn("cannot collect cluster endpoints", zap.Error(err))
+		return nil, err
+	}
+
 	var (
 		minersCount = h.state.MinersCount()
 		uptime      = uint64(time.Now().Sub(h.startTime).Seconds())
 		reply       = &pb.HubStatusReply{
-			MinerCount: uint64(minersCount),
-			Uptime:     uptime,
-			Platform:   util.GetPlatformName(),
-			Version:    h.version,
-			EthAddr:    util.PubKeyToAddr(h.ethKey.PublicKey).Hex(),
+			MinerCount:      uint64(minersCount),
+			Uptime:          uptime,
+			Platform:        util.GetPlatformName(),
+			Version:         h.version,
+			EthAddr:         util.PubKeyToAddr(h.ethKey.PublicKey).Hex(),
+			ClientEndpoint:  clients[0],
+			WorkerEndpoints: workers,
 		}
 	)
 
@@ -1204,21 +1212,11 @@ func (h *Hub) announceAddress() error {
 		return nil
 	}
 
-	members, err := h.cluster.Members()
+	clientEndpoints, workerEndpoints, err := h.collectEndpoints()
 	if err != nil {
 		return err
 	}
 
-	log.G(h.ctx).Info("got cluster members for locator announcement", zap.Any("members", members))
-
-	var (
-		clientEndpoints []string
-		workerEndpoints []string
-	)
-	for _, member := range members {
-		clientEndpoints = append(clientEndpoints, member.Client...)
-		workerEndpoints = append(workerEndpoints, member.Worker...)
-	}
 	req := &pb.AnnounceRequest{
 		ClientEndpoints: clientEndpoints,
 		WorkerEndpoints: workerEndpoints,
@@ -1232,4 +1230,21 @@ func (h *Hub) announceAddress() error {
 	_, err = h.locatorClient.Announce(h.ctx, req)
 
 	return err
+}
+
+func (h *Hub) collectEndpoints() ([]string, []string, error) {
+	var clients []string
+	var workers []string
+
+	members, err := h.cluster.Members()
+	if err != nil {
+		return clients, workers, err
+	}
+
+	for _, member := range members {
+		clients = append(clients, member.Client...)
+		workers = append(workers, member.Worker...)
+	}
+
+	return clients, workers, nil
 }
