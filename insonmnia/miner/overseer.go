@@ -28,9 +28,6 @@ import (
 const overseerTag = "sonm.overseer"
 const dieEvent = "die"
 
-const bridgeNetwork = "bridge"
-const tincNetwork = "tinc"
-
 // Description for a target application.
 type Description struct {
 	Registry      string
@@ -71,12 +68,12 @@ func (d *Description) GPU() bool {
 
 func (d *Description) NetworkType() string {
 	if len(d.networkType) == 0 {
-		return bridgeNetwork
+		return
 	}
 	return d.networkType
 }
 
-func (d *Description) NetworkParam() map[string]string {
+func (d *Description) NetworkOptions() map[string]string {
 	return d.networkParam
 }
 

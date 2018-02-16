@@ -5,13 +5,17 @@ import (
 	"fmt"
 
 	"github.com/docker/docker/api/types/container"
-	"github.com/moby/moby/api/types/network"
+	"github.com/docker/docker/api/types/network"
 	log "github.com/noxiouz/zapctx/ctxlog"
 	"github.com/sonm-io/core/insonmnia/miner/gpu"
+	minet "github.com/sonm-io/core/insonmnia/miner/network"
 	"github.com/sonm-io/core/insonmnia/miner/volume"
 	"github.com/sonm-io/core/proto"
 	"go.uber.org/zap"
 )
+
+const bridgeNetwork = "bridge"
+const tincNetwork = "tinc"
 
 // Provider unifies all possible providers for tuning.
 type Provider interface {
@@ -38,16 +42,27 @@ type VolumeProvider interface {
 }
 
 type NetworkProvider interface {
+	Networks() []Network
+}
+
+type Network interface {
+	// ID returns a unique identifier that will be used as a new network name.
+	ID() string
 	// NetworkType returns a network driver name used to establish networking.
 	NetworkType() string
 	// NetworkOptions return configuration map, passed directly to network driver, this map should not be mutated.
 	NetworkOptions() map[string]string
+	// Returns network subnet in CIDR notation if applicable
+	NetworkCIDR() string
+	// Returns specified addr to join the network
+	NetworkAddr() string
 }
 
 // Repository describes a place where all SONM plugins for Docker live.
 type Repository struct {
-	volumes   map[string]volume.VolumeDriver
-	gpuTuners map[sonm.GPUVendorType]gpu.Tuner
+	volumes       map[string]volume.VolumeDriver
+	gpuTuners     map[sonm.GPUVendorType]gpu.Tuner
+	networkTuners map[string]minet.Tuner
 }
 
 // NewRepository constructs a new repository for SONM plugins from the
@@ -95,7 +110,11 @@ func NewRepository(ctx context.Context, cfg Config) (*Repository, error) {
 	}
 
 	if cfg.Tinc != nil {
-		r.
+		tincTuner, err := minet.NewTincTuner(cfg.Tinc)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize tinc tuner - %v", err)
+		}
+		r.networkTuners[tincNetwork] = tincTuner
 	}
 
 	return r, nil
@@ -132,7 +151,7 @@ func (r *Repository) Tune(provider Provider, hostCfg *container.HostConfig, netC
 		return nil, err
 	}
 	cleanup.Add(c)
-	return cleanup, nil
+	return &cleanup, nil
 }
 
 // HasGPU returns true if the Repository has at least one GPU plugin loaded
@@ -205,7 +224,10 @@ func (r *Repository) TuneVolumes(provider VolumeProvider, cfg *container.HostCon
 }
 
 func (r *Repository) TuneNetworks(provider NetworkProvider, cfg *network.NetworkingConfig) (Cleanup, error) {
-
+	networks := provider.Networks()
+	for _, net := networks {
+		tuner, ok := r.networkTuners[provider]
+	}
 }
 
 func (r *Repository) Close() error {
