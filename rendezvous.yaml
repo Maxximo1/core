@@ -1,1 +1,7 @@
 endpoint: "[::]:14099"
+
+ethereum:
+  # Path to keystore.
+  key_store: "./keys"
+  # Passphrase for keystore
+  pass_phrase: "any"

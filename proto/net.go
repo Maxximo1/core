@@ -36,7 +36,7 @@ func NewSocketAddr(endpoint string) (*SocketAddr, error) {
 	if err != nil {
 		return nil, err
 	}
-	port, err := strconv.ParseInt(portString, 10, 16)
+	port, err := strconv.ParseUint(portString, 10, 16)
 	if err != nil {
 		return nil, err
 	}

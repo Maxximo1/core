@@ -34,7 +34,6 @@ import (
 	"net"
 	"sync"
 
-	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/sonm-io/core/insonmnia/auth"
 	"github.com/sonm-io/core/proto"
 	"github.com/sonm-io/core/util/xgrpc"
@@ -43,6 +42,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/peer"
 )
+
+type deleter func()
 
 type peerCandidate struct {
 	Peer
@@ -100,14 +101,6 @@ func (m *meeting) RandomClient() *peerCandidate {
 	return &v
 }
 
-func (m *meeting) Servers() []Peer {
-	var peers []Peer
-	for _, p := range m.servers {
-		peers = append(peers, p.Peer)
-	}
-	return peers
-}
-
 // TODO
 // TODO: When resolving it's necessary to track also IP version. For example to be able not to return IPv6 when connecting socket is IPv4.
 type Server struct {
@@ -119,8 +112,13 @@ type Server struct {
 	rv map[string]*meeting
 }
 
-// NewServer constructs a new rendezvous server using specified config and options.
-// TODO: More.
+// NewServer constructs a new rendezvous server using specified config and
+// options.
+//
+// The server supports TLS by passing transport credentials using
+// WithCredentials option.
+// Also it is possible to activate logging system by passing a logger using
+// WithLogger function as an option.
 func NewServer(cfg Config, options ...Option) (*Server, error) {
 	opts := newOptions()
 	for _, option := range options {
@@ -138,11 +136,11 @@ func NewServer(cfg Config, options ...Option) (*Server, error) {
 		rv: map[string]*meeting{},
 	}
 
-	server.log.Debug("configured authentication settings",
-		zap.Stringer("eth", crypto.PubkeyToAddress(cfg.PrivateKey.PublicKey)),
-	)
+	server.log.Debug("configured authentication settings", zap.Any("credentials", opts.credentials.Info()))
 
 	sonm.RegisterRendezvousServer(server.server, server)
+	server.log.Debug("registered gRPC server")
+
 	return server, nil
 }
 
@@ -153,7 +151,7 @@ func (s *Server) Resolve(ctx context.Context, request *sonm.ConnectRequest) (*so
 
 	peerInfo, ok := peer.FromContext(ctx)
 	if !ok {
-		return nil, errors.New("no peer info provided")
+		return nil, errNoPeerInfo()
 	}
 
 	s.log.Info("resolving remote peer", zap.String("id", request.ID))
@@ -161,21 +159,27 @@ func (s *Server) Resolve(ctx context.Context, request *sonm.ConnectRequest) (*so
 	id := request.ID
 	peerHandle := NewPeer(*peerInfo, request.PrivateAddrs)
 
-	c := s.newServerWatch(id, peerHandle)
-	defer s.removeServerWatch(id, peerHandle)
+	c, deleter := s.addServerWatch(id, peerHandle)
+	defer deleter()
 
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case p := <-c:
-		return newConnectReply(p)
+		response, err := newResolveReply(p)
+		if err != nil {
+			return nil, err
+		}
+
+		s.log.Debug("providing remote server endpoint(s)", zap.String("id", request.ID), zap.Any("response", response))
+		return response, nil
 	}
 }
 
 func (s *Server) Publish(ctx context.Context, request *sonm.PublishRequest) (*sonm.PublishReply, error) {
 	peerInfo, ok := peer.FromContext(ctx)
 	if !ok {
-		return nil, errors.New("no peer info provided")
+		return nil, errNoPeerInfo()
 	}
 
 	ethAddr, err := auth.ExtractWalletFromContext(ctx)
@@ -188,19 +192,25 @@ func (s *Server) Publish(ctx context.Context, request *sonm.PublishRequest) (*so
 	id := ethAddr.String()
 	peerHandle := NewPeer(*peerInfo, request.PrivateAddrs)
 
-	c := s.newClientWatch(id, peerHandle)
-	defer s.removeClientWatch(id, peerHandle)
+	c, deleter := s.newClientWatch(id, peerHandle)
+	defer deleter()
 
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case p := <-c:
+		response, err := newPublishReply(p)
+		if err != nil {
+			return nil, err
+		}
+
+		s.log.Info("providing remote client endpoint(s)", zap.String("id", ethAddr.String()), zap.Any("response", response))
 		return newPublishReply(p)
 	}
 }
 
-func (s *Server) newServerWatch(id string, peer Peer) <-chan Peer {
-	c := make(chan Peer)
+func (s *Server) addServerWatch(id string, peer Peer) (<-chan Peer, deleter) {
+	c := make(chan Peer, 1)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -220,11 +230,11 @@ func (s *Server) newServerWatch(id string, peer Peer) <-chan Peer {
 		s.rv[id] = meeting
 	}
 
-	return c
+	return c, func() { s.removeServerWatch(id, peer) }
 }
 
-func (s *Server) newClientWatch(id string, peer Peer) <-chan Peer {
-	c := make(chan Peer)
+func (s *Server) newClientWatch(id string, peer Peer) (<-chan Peer, deleter) {
+	c := make(chan Peer, 1)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -243,7 +253,7 @@ func (s *Server) newClientWatch(id string, peer Peer) <-chan Peer {
 		s.rv[id] = meeting
 	}
 
-	return c
+	return c, func() { s.removeClientWatch(id, peer) }
 }
 
 func (s *Server) removeClientWatch(id string, peer Peer) {
@@ -266,7 +276,7 @@ func (s *Server) removeServerWatch(id string, peer Peer) {
 	}
 }
 
-func newConnectReply(peer Peer) (*sonm.ConnectReply, error) {
+func newResolveReply(peer Peer) (*sonm.ConnectReply, error) {
 	addr, err := sonm.NewAddr(peer.Addr)
 	if err != nil {
 		return nil, err
@@ -305,6 +315,11 @@ func newPublishReply(peer Peer) (*sonm.PublishReply, error) {
 	return response, nil
 }
 
+// Run starts accepting incoming connections, serving them by blocking the
+// caller execution context until either explicitly terminated using Stop
+// or some critical error occurred.
+//
+// Always returns non-nil error.
 func (s *Server) Run() error {
 	listener, err := net.Listen(s.cfg.Addr.Network(), s.cfg.Addr.String())
 	if err != nil {
@@ -315,11 +330,16 @@ func (s *Server) Run() error {
 	return s.server.Serve(listener)
 }
 
-// Stop stops the server gracefully.
+// Stop stops the server.
 //
-// It stops the server from accepting new connections and RPCs and blocks
-// until all the pending RPCs are finished.
+// It immediately closes all open connections and listeners. Also it cancels
+// all active RPCs on the server side and the corresponding pending RPCs on
+// the client side will get notified by connection errors.
 func (s *Server) Stop() {
 	s.log.Info("rendezvous is shutting down")
-	s.server.GracefulStop()
+	s.server.Stop()
+}
+
+func errNoPeerInfo() error {
+	return errors.New("no peer info provided")
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/sonm-io/core/insonmnia/rendezvous"
 	"github.com/sonm-io/core/proto"
 	"github.com/sonm-io/core/util/netutil"
+	"go.uber.org/zap"
 )
 
 type connTuple struct {
@@ -32,6 +33,7 @@ func (m *connTuple) unwrap() (net.Conn, error) {
 // TODO: What to do if the connection between us and the RV is broken?
 type Listener struct {
 	ctx         context.Context
+	log         *zap.Logger
 	client      rendezvous.Client
 	channel     chan connTuple
 	listener    net.Listener
@@ -57,10 +59,11 @@ func NewListener(ctx context.Context, addr string, options ...Option) (net.Liste
 
 	m := &Listener{
 		ctx:         ctx,
+		log:         opts.log,
 		client:      opts.client,
 		channel:     channel,
 		listener:    listener,
-		maxAttempts: 3,
+		maxAttempts: 30,
 		timeout:     10 * time.Second,
 	}
 
@@ -80,14 +83,18 @@ func (m *Listener) Accept() (net.Conn, error) {
 	// Check for acceptor channel, if there is a connection - return immediately.
 	select {
 	case conn := <-m.channel:
+		m.log.Info("received acceptor peer", zap.Any("addr", conn.RemoteAddr()))
 		return conn.Conn, conn.error
 	default:
 	}
 
 	addrs, err := m.rendezvous()
 	if err != nil {
+		m.log.Error("fuck you remote peer endpoints", zap.Error(err))
 		return nil, err
 	}
+
+	m.log.Info("received remote peer endpoints", zap.Any("addrs", addrs))
 
 	// Here the race begins! We're simultaneously trying to connect to ALL
 	// provided endpoints with a reasonable timeout. The first winner will
@@ -142,19 +149,22 @@ func (m *Listener) punch(addrs *sonm.PublishReply) (net.Conn, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), m.timeout)
 	defer cancel()
 
+	m.log.Info("punch #1", zap.Any("addrs", addrs))
 	pending := make(chan connTuple)
-	defer close(pending)
 
 	if addrs.PublicAddr.IsValid() {
 		go func() {
 			conn, err := m.punchAddr(ctx, addrs.PublicAddr)
+			m.log.Info("using NAT", zap.Any("addr", addrs.PublicAddr), zap.Error(err))
 			pending <- newConnTuple(conn, err)
 		}()
 	}
 
 	for _, addr := range addrs.PrivateAddrs {
 		go func() {
-			pending <- newConnTuple(m.punchAddr(ctx, addr))
+			conn, err := m.punchAddr(ctx, addr)
+			m.log.Info("using private address", zap.Any("addr", addr), zap.Error(err))
+			pending <- newConnTuple(conn, err)
 		}()
 	}
 
@@ -162,25 +172,29 @@ func (m *Listener) punch(addrs *sonm.PublishReply) (net.Conn, error) {
 
 	go func() {
 		var errs []error
-		bullshit := false
-		for conn := range pending {
+		connected := false
+		for conn := range pending { // TODO: Hangs here.
 			if conn.error != nil {
+				m.log.Info("failed to punch", zap.Error(conn.error))
 				errs = append(errs, conn.error)
 				continue
 			}
 
-			if bullshit {
+			if connected {
 				conn.Close()
 			} else {
+				connected = true
 				waiter <- conn
-				bullshit = true
 			}
 		}
 
-		waiter <- newConnTuple(nil, fmt.Errorf("failed to punch the network: all attempts has failed: %+v", errs))
+		if !connected {
+			waiter <- newConnTuple(nil, fmt.Errorf("failed to punch the network: all attempts has failed: %+v", errs))
+		}
 	}()
 
 	conn := <-waiter
+	m.log.Info("punched finally", zap.Stringer("addr", conn.RemoteAddr()))
 	return conn.unwrap()
 }
 
@@ -193,12 +207,13 @@ func (m *Listener) punchAddr(ctx context.Context, addr *sonm.Addr) (net.Conn, er
 	var conn net.Conn
 	for i := 0; i < m.maxAttempts; i++ {
 		conn, err = DialContext(ctx, protocol, m.Addr().String(), peerAddr.String())
+		fmt.Printf("WTF punch: %s %s %s\n", m.Addr().String(), peerAddr.String(), err)
 		if err == nil {
-			break
+			return conn, nil
 		}
 	}
 
-	return conn, fmt.Errorf("failed to connect: %s", err)
+	return nil, fmt.Errorf("failed to connect: %s", err)
 }
 
 func (m *Listener) Close() error {

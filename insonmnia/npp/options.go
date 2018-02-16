@@ -2,12 +2,14 @@ package npp
 
 import (
 	"context"
+	"fmt"
 	"net"
 
 	"github.com/libp2p/go-reuseport"
 	"github.com/sonm-io/core/insonmnia/auth"
 	"github.com/sonm-io/core/insonmnia/rendezvous"
 	"github.com/sonm-io/core/util/xgrpc"
+	"go.uber.org/zap"
 	"google.golang.org/grpc/credentials"
 )
 
@@ -16,6 +18,7 @@ type Option func(o *options) error
 
 type options struct {
 	ctx       context.Context
+	log       *zap.Logger
 	localAddr net.Addr
 	client    rendezvous.Client
 }
@@ -35,6 +38,7 @@ func newOptions(ctx context.Context, addr net.Addr) *options {
 // back to the old good plain TCP connection.
 func WithRendezvous(addr auth.Endpoint, credentials credentials.TransportCredentials) Option {
 	return func(o *options) error {
+		fmt.Printf("%s %s\n", o.localAddr.String(), addr.Endpoint)
 		conn, err := reuseport.Dial("tcp", o.localAddr.String(), addr.Endpoint)
 		if err != nil {
 			return err
@@ -48,6 +52,14 @@ func WithRendezvous(addr auth.Endpoint, credentials credentials.TransportCredent
 		o.client = client
 		o.localAddr = conn.LocalAddr()
 
+		return nil
+	}
+}
+
+//
+func WithLogger(log *zap.Logger) Option {
+	return func(o *options) error {
+		o.log = log
 		return nil
 	}
 }

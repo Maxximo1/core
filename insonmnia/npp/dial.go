@@ -25,7 +25,9 @@ type Dialer struct {
 
 // TODO
 func NewDialer(ctx context.Context, options ...Option) (*Dialer, error) {
-	opts := newOptions(ctx, &net.TCPAddr{})
+	opts := newOptions(ctx, &net.TCPAddr{
+		IP: net.IPv4(0, 0, 0, 0), // TODO: Hack.
+	})
 
 	for _, o := range options {
 		if err := o(opts); err != nil {
@@ -37,7 +39,7 @@ func NewDialer(ctx context.Context, options ...Option) (*Dialer, error) {
 		ctx:         ctx,
 		client:      opts.client,
 		localAddr:   opts.localAddr,
-		maxAttempts: 3,
+		maxAttempts: 5,
 		timeout:     10 * time.Second,
 	}, nil
 }
@@ -60,7 +62,6 @@ func (m *Dialer) punch(ctx context.Context, addrs *sonm.ConnectReply) (net.Conn,
 	}
 
 	pending := make(chan connTuple)
-	defer close(pending)
 
 	if addrs.PublicAddr.IsValid() {
 		go func() {
@@ -111,11 +112,11 @@ func (m *Dialer) punchAddr(ctx context.Context, addr *sonm.Addr) (net.Conn, erro
 	for i := 0; i < m.maxAttempts; i++ {
 		conn, err = DialContext(ctx, protocol, m.localAddr.String(), peerAddr.String())
 		if err == nil {
-			break
+			return conn, nil
 		}
 	}
 
-	return conn, fmt.Errorf("failed to connect: %s", err)
+	return nil, fmt.Errorf("failed to connect: %s", err)
 }
 
 func (m *Dialer) rendezvous(ctx context.Context, addr auth.Endpoint) (*sonm.ConnectReply, error) {

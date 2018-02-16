@@ -1357,99 +1357,103 @@ func (h *Hub) Serve() error {
 	h.startTime = time.Now()
 
 	{
-		endpoint, err := auth.NewEndpoint("0x28ba1d828C4B6a73a8641f62083c8Ce7B869D04C@138.68.189.138:14099")
+		endpoint, err := auth.NewEndpoint("0x8125721C2413d99a33E351e1F6Bb4e56b6b633FD@138.68.189.138:14099")
 		if err != nil {
 			return err
 		}
 
-		listener, err := npp.NewListener(h.ctx, "0.0.0.0:16000", npp.WithRendezvous(*endpoint, h.creds))
+		listener, err := npp.NewListener(h.ctx, "0.0.0.0:16000", npp.WithRendezvous(*endpoint, h.creds), npp.WithLogger(log.G(h.ctx)))
 		if err != nil {
 			log.G(h.ctx).Error("failed to listen", zap.String("address", h.cfg.Endpoint), zap.Error(err))
 			return err
 		}
-		h.waiter.Go(func() error {
-			return h.externalGrpc.Serve(listener)
-		})
+		//h.waiter.Go(func() error {
+		//	return h.externalGrpc.Serve(listener)
+		//})
+
+		h.minerListener = listener
 	}
 
-	listener, err := net.Listen("tcp", h.cfg.Endpoint)
-	if err != nil {
-		log.G(h.ctx).Error("failed to listen", zap.String("address", h.cfg.Endpoint), zap.Error(err))
-		return err
-	}
-	log.G(h.ctx).Info("listening for connections from Miners", zap.Stringer("address", listener.Addr()))
-
-	grpcL, err := net.Listen("tcp", h.cfg.Cluster.Endpoint)
-	if err != nil {
-		log.G(h.ctx).Error("failed to listen",
-			zap.String("address", h.cfg.Cluster.Endpoint), zap.Error(err))
-		listener.Close()
-		return err
-	}
-	log.G(h.ctx).Info("listening for gRPC API connections", zap.Stringer("address", grpcL.Addr()))
+	//listener, err := net.Listen("tcp", h.cfg.Endpoint)
+	//if err != nil {
+	//	log.G(h.ctx).Error("failed to listen", zap.String("address", h.cfg.Endpoint), zap.Error(err))
+	//	return err
+	//}
+	//log.G(h.ctx).Info("listening for connections from Miners", zap.Stringer("address", listener.Addr()))
+	//
+	//grpcL, err := net.Listen("tcp", h.cfg.Cluster.Endpoint)
+	//if err != nil {
+	//	log.G(h.ctx).Error("failed to listen",
+	//		zap.String("address", h.cfg.Cluster.Endpoint), zap.Error(err))
+	//	listener.Close()
+	//	return err
+	//}
+	//log.G(h.ctx).Info("listening for gRPC API connections", zap.Stringer("address", grpcL.Addr()))
 	// TODO: fix this possible race: Close before Serve
-	h.minerListener = listener
+	//h.minerListener = listener
 
-	h.waiter.Go(func() error {
-		return h.externalGrpc.Serve(grpcL)
-	})
+	//h.waiter.Go(func() error {
+	//	return h.externalGrpc.Serve(grpcL)
+	//})
 
 	h.waiter.Go(func() error {
 		for {
 			conn, err := h.minerListener.Accept()
 			if err != nil {
+				log.G(h.ctx).Error("NOT SUCCESS?", zap.Error(err))
 				return err
 			}
+			log.G(h.ctx).Info("SUCCESS?")
 			go h.handleInterconnect(h.ctx, conn)
 		}
 	})
 
-	h.waiter.Go(func() error {
-		return h.askPlans.Run(h.ctx)
-	})
+	//h.waiter.Go(func() error {
+	//	return h.askPlans.Run(h.ctx)
+	//})
 
-	if err := h.cluster.RegisterAndLoadEntity("tasks", &h.tasks); err != nil {
-		return err
-	}
-	if err := h.cluster.RegisterAndLoadEntity("device_properties", &h.deviceProperties); err != nil {
-		return err
-	}
-	if err := h.cluster.RegisterAndLoadEntity("acl", h.acl); err != nil {
-		return err
-	}
-	if err := h.cluster.RegisterAndLoadEntity("deals", &h.deals); err != nil {
-		return err
-	}
+	//if err := h.cluster.RegisterAndLoadEntity("tasks", &h.tasks); err != nil {
+	//	return err
+	//}
+	//if err := h.cluster.RegisterAndLoadEntity("device_properties", &h.deviceProperties); err != nil {
+	//	return err
+	//}
+	//if err := h.cluster.RegisterAndLoadEntity("acl", h.acl); err != nil {
+	//	return err
+	//}
+	//if err := h.cluster.RegisterAndLoadEntity("deals", &h.deals); err != nil {
+	//	return err
+	//}
+	//
+	//askPlansData := AskPlansData{}
+	//if err := h.cluster.RegisterAndLoadEntity("ask_plans", &askPlansData); err != nil {
+	//	return err
+	//}
+	//h.askPlans.RestoreFrom(askPlansData)
+	//
+	//reservedOrders := make(map[OrderID]ReservedOrder, 0)
+	//if err := h.cluster.RegisterAndLoadEntity("reserved_orders", &reservedOrders); err != nil {
+	//	return err
+	//}
+	//h.orderShelter.RestoreFrom(reservedOrders)
+	//
+	//log.G(h.ctx).Info("fetched entities",
+	//	zap.Any("tasks", h.tasks),
+	//	zap.Any("device_properties", h.deviceProperties),
+	//	zap.Any("acl", h.acl),
+	//	zap.Any("ask_plans", h.askPlans),
+	//	zap.Any("reserved_orders", h.orderShelter),
+	//)
 
-	askPlansData := AskPlansData{}
-	if err := h.cluster.RegisterAndLoadEntity("ask_plans", &askPlansData); err != nil {
-		return err
-	}
-	h.askPlans.RestoreFrom(askPlansData)
-
-	reservedOrders := make(map[OrderID]ReservedOrder, 0)
-	if err := h.cluster.RegisterAndLoadEntity("reserved_orders", &reservedOrders); err != nil {
-		return err
-	}
-	h.orderShelter.RestoreFrom(reservedOrders)
-
-	log.G(h.ctx).Info("fetched entities",
-		zap.Any("tasks", h.tasks),
-		zap.Any("device_properties", h.deviceProperties),
-		zap.Any("acl", h.acl),
-		zap.Any("ask_plans", h.askPlans),
-		zap.Any("reserved_orders", h.orderShelter),
-	)
-
-	h.waiter.Go(h.runCluster)
-	h.waiter.Go(h.listenClusterEvents)
-	h.waiter.Go(h.runAcceptedDealsWatcher)
-	h.waiter.Go(h.watchDealsClosed)
-	h.waiter.Go(h.startLocatorAnnouncer)
-	h.waiter.Go(h.runDealsWatcher)
-	h.waiter.Go(func() error {
-		return h.orderShelter.Run(h.ctx)
-	})
+	//h.waiter.Go(h.runCluster)
+	//h.waiter.Go(h.listenClusterEvents)
+	//h.waiter.Go(h.runAcceptedDealsWatcher)
+	//h.waiter.Go(h.watchDealsClosed)
+	//h.waiter.Go(h.startLocatorAnnouncer)
+	//h.waiter.Go(h.runDealsWatcher)
+	//h.waiter.Go(func() error {
+	//	return h.orderShelter.Run(h.ctx)
+	//})
 
 	h.waiter.Wait()
 

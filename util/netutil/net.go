@@ -15,7 +15,7 @@ func SplitHostPort(hostport string) (net.IP, Port, error) {
 		return nil, 0, err
 	}
 
-	p, err := strconv.ParseInt(port, 10, 16)
+	p, err := strconv.ParseUint(port, 10, 16)
 	if err != nil {
 		return nil, 0, err
 	}

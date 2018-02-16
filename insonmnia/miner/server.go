@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"strconv"
 	"sync"
 	"time"
@@ -24,6 +23,7 @@ import (
 	"github.com/sonm-io/core/insonmnia/hardware"
 	"github.com/sonm-io/core/insonmnia/miner/plugin"
 	"github.com/sonm-io/core/insonmnia/miner/volume"
+	"github.com/sonm-io/core/insonmnia/npp"
 	"github.com/sonm-io/core/insonmnia/resource"
 	"github.com/sonm-io/core/insonmnia/structs"
 	pb "github.com/sonm-io/core/proto"
@@ -792,57 +792,70 @@ func (m *Miner) manageConnections() {
 }
 
 func (m *Miner) setupHubConnections() error {
-	var endpoints []string
-	if m.cfg.HubResolveEndpoints() {
-		log.G(m.ctx).Info("resolving hub endpoints", zap.String("eth_addr", m.cfg.HubEthAddr()))
-		resolved, err := m.locatorClient.Resolve(m.ctx,
-			&pb.ResolveRequest{EthAddr: m.cfg.HubEthAddr(), EndpointType: pb.ResolveRequest_WORKER})
-		if err != nil {
-			return fmt.Errorf("failed to resolve hub addr from %s: %s", m.cfg.HubEthAddr(), err)
-		}
+	//var endpoints []string
+	//if m.cfg.HubResolveEndpoints() {
+	//	log.G(m.ctx).Info("resolving hub endpoints", zap.String("eth_addr", m.cfg.HubEthAddr()))
+	//	resolved, err := m.locatorClient.Resolve(m.ctx,
+	//		&pb.ResolveRequest{EthAddr: m.cfg.HubEthAddr(), EndpointType: pb.ResolveRequest_WORKER})
+	//	if err != nil {
+	//		return fmt.Errorf("failed to resolve hub addr from %s: %s", m.cfg.HubEthAddr(), err)
+	//	}
+	//
+	//	endpoints = resolved.Endpoints
+	//} else {
+	//	endpoints = m.cfg.HubEndpoints()
+	//}
 
-		endpoints = resolved.Endpoints
-	} else {
-		endpoints = m.cfg.HubEndpoints()
-	}
+	//log.G(m.ctx).Info("connecting to hub endpoints", zap.Any("endpoints", endpoints))
 
-	log.G(m.ctx).Info("connecting to hub endpoints", zap.Any("endpoints", endpoints))
-
-	for _, endpoint := range endpoints {
-		go m.connectToHub(endpoint)
-	}
+	//for _, endpoint := range endpoints {
+	//	go m.connectToHub(endpoint)
+	//}
 
 	return nil
 }
 
 func (m *Miner) connectToHub(endpoint string) {
-	log.G(m.ctx).Info("connecting to hub", zap.String("endpoint", endpoint))
-
-	m.connectedHubsLock.Lock()
-	if _, ok := m.connectedHubs[endpoint]; ok {
-		m.connectedHubsLock.Unlock()
-		log.G(m.ctx).Info("already connected to hub", zap.String("endpoint", endpoint))
-		return
-	}
-	m.connectedHubs[endpoint] = struct{}{}
-	m.connectedHubsLock.Unlock()
-
-	defer func() {
-		m.connectedHubsLock.Lock()
-		delete(m.connectedHubs, endpoint)
-		m.connectedHubsLock.Unlock()
-	}()
+	//log.G(m.ctx).Info("connecting to hub", zap.String("endpoint", endpoint))
+	//
+	//m.connectedHubsLock.Lock()
+	//if _, ok := m.connectedHubs[endpoint]; ok {
+	//	m.connectedHubsLock.Unlock()
+	//	log.G(m.ctx).Info("already connected to hub", zap.String("endpoint", endpoint))
+	//	return
+	//}
+	//m.connectedHubs[endpoint] = struct{}{}
+	//m.connectedHubsLock.Unlock()
+	//
+	//defer func() {
+	//	m.connectedHubsLock.Lock()
+	//	delete(m.connectedHubs, endpoint)
+	//	m.connectedHubsLock.Unlock()
+	//}()
 
 	// Connect to the Hub
-	var d = net.Dialer{
-		DualStack: true,
-		KeepAlive: 5 * time.Second,
-	}
-	conn, err := d.DialContext(m.ctx, "tcp", endpoint)
+	//var d = net.Dialer{
+	//	DualStack: true,
+	//	KeepAlive: 5 * time.Second,
+	//}
+	ep, err := auth.NewEndpoint("0x8125721C2413d99a33E351e1F6Bb4e56b6b633FD@138.68.189.138:14099")
 	if err != nil {
-		log.G(m.ctx).Error("failed to dial to the Hub", zap.String("addr", endpoint), zap.Error(err))
 		return
 	}
+
+	d, err := npp.NewDialer(m.ctx, npp.WithRendezvous(*ep, m.creds), npp.WithLogger(log.G(m.ctx)))
+	if err != nil {
+		log.G(m.ctx).Error("failed to create dialer", zap.Error(err))
+		return
+	}
+	conn, err := d.Dial(*ep)
+	if err != nil {
+		log.G(m.ctx).Error("NOT SUCCESS?", zap.Error(err))
+		//log.G(m.ctx).Error("failed to dial to the Hub", zap.String("addr", ep.Endpoint), zap.Error(err))
+		return
+	}
+
+	log.G(m.ctx).Info("SUCCESS?")
 
 	defer conn.Close()
 
@@ -890,6 +903,7 @@ func (m *Miner) Serve() error {
 	go func() { m.manageConnections() }()
 	go func() { m.startSSH() }()
 	go func() { m.grpcServer.Serve(m.rl) }()
+	go func() { m.connectToHub("") }()
 
 	<-m.ctx.Done()
 	return m.ctx.Err()
