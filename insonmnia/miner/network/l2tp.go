@@ -5,15 +5,13 @@ package network
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
-	"os/exec"
 
-	"time"
+	"crypto/md5"
+	"encoding/hex"
 
 	"github.com/docker/go-plugins-helpers/network"
 	log "github.com/noxiouz/zapctx/ctxlog"
 	"github.com/pkg/errors"
-	"github.com/vishvananda/netlink"
 	"go.uber.org/zap"
 )
 
@@ -44,18 +42,6 @@ func (d *L2TPDriver) GetCapabilities() (*network.CapabilitiesResponse, error) {
 func (d *L2TPDriver) CreateNetwork(request *network.CreateNetworkRequest) error {
 	log.G(d.ctx).Info("received CreateNetwork request", zap.Any("request", request))
 
-	netInfo := &networkInfo{
-		id:        request.NetworkID,
-		ipv4Data:  request.IPv4Data,
-		ipv6Data:  request.IPv6Data,
-		endpoints: make(map[string]*endpointInfo),
-	}
-
-	if _, ok := d.networks[netInfo.id]; ok {
-		log.G(d.ctx).Error("network already exists", zap.String("network_id", request.NetworkID))
-		return errors.New("network already exists")
-	}
-
 	rawOpts, ok := request.Options["com.docker.network.generic"]
 	if !ok {
 		log.G(d.ctx).Error("no options provided")
@@ -68,11 +54,16 @@ func (d *L2TPDriver) CreateNetwork(request *network.CreateNetworkRequest) error 
 		return errors.New("invalid options")
 	}
 
+	var (
+		lnsAddr     string
+		pppUsername string
+		pppPassword string
+	)
 	for optName, optVal := range opts {
 		switch optName {
 		case "lns_addr":
 			if optValTyped, ok := optVal.(string); ok {
-				netInfo.lnsAddr = optValTyped
+				lnsAddr = optValTyped
 			} else {
 				log.G(d.ctx).Error("invalid option value", zap.String("option_name", optName),
 					zap.Any("option_value", optVal))
@@ -80,7 +71,7 @@ func (d *L2TPDriver) CreateNetwork(request *network.CreateNetworkRequest) error 
 			}
 		case "ppp_username":
 			if optValTyped, ok := optVal.(string); ok {
-				netInfo.pppUsername = optValTyped
+				pppUsername = optValTyped
 			} else {
 				log.G(d.ctx).Error("invalid option value", zap.String("option_name", optName),
 					zap.Any("option_value", optVal))
@@ -88,7 +79,7 @@ func (d *L2TPDriver) CreateNetwork(request *network.CreateNetworkRequest) error 
 			}
 		case "ppp_password":
 			if optValTyped, ok := optVal.(string); ok {
-				netInfo.pppPassword = optValTyped
+				pppPassword = optValTyped
 			} else {
 				log.G(d.ctx).Error("invalid option value", zap.String("option_name", optName),
 					zap.Any("option_value", optVal))
@@ -97,10 +88,12 @@ func (d *L2TPDriver) CreateNetwork(request *network.CreateNetworkRequest) error 
 		}
 	}
 
-	if err := netInfo.setup(); err != nil {
-		return err
+	netInfo, ok := d.networks[GetMD5Hash(lnsAddr+pppUsername+pppPassword)]
+	if !ok {
+		return errors.New("unexpected network parameters")
 	}
 
+	netInfo.id = request.NetworkID
 	d.networks[netInfo.id] = netInfo
 
 	log.G(d.ctx).Info("successfully registered network", zap.String("network_id", netInfo.id))
@@ -111,135 +104,19 @@ func (d *L2TPDriver) CreateNetwork(request *network.CreateNetworkRequest) error 
 func (d *L2TPDriver) CreateEndpoint(request *network.CreateEndpointRequest) (*network.CreateEndpointResponse, error) {
 	log.G(d.ctx).Info("received CreateEndpoint request", zap.Any("request", request))
 
+	return nil, nil
+}
+
+func (d *L2TPDriver) Join(request *network.JoinRequest) (*network.JoinResponse, error) {
+	log.G(d.ctx).Info("received Join request", zap.Any("request", request))
+
 	netInfo, ok := d.networks[request.NetworkID]
 	if !ok {
-		log.G(d.ctx).Error("network not found", zap.String("network_id", request.NetworkID))
-		return nil, errors.Errorf("network not found: %s", request.NetworkID)
+		return nil, errors.Errorf("network %s not found", request.NetworkID)
 	}
 
-	if _, ok := netInfo.endpoints[request.EndpointID]; ok {
-		log.G(d.ctx).Error("endpoint already exists", zap.String("network_id", request.NetworkID))
-		return nil, errors.New("endpoint already exists")
-	}
-
-	eptInfo := &endpointInfo{
-		id:          request.EndpointID,
-		networkID:   netInfo.id,
-		lnsAddr:     netInfo.lnsAddr,
-		pppUsername: netInfo.pppUsername,
-		pppPassword: netInfo.pppPassword,
-	}
-
-	if err := eptInfo.setup(); err != nil {
-		return nil, err
-	}
-
-	var (
-		pppCfg       = eptInfo.getPppConfig()
-		xl2tpdCfg    = eptInfo.getXl2tpConfig()
-		addCfgCmd    = exec.Command("xl2tpd-control", "add", eptInfo.сonnName, xl2tpdCfg[0], xl2tpdCfg[1])
-		setupConnCmd = exec.Command("xl2tpd-control", "connect", eptInfo.сonnName)
-	)
-
-	log.G(d.ctx).Info("creating ppp options file", zap.String("ppo_opt_file", eptInfo.pppOptFile),
-		zap.String("network_id", eptInfo.networkID), zap.String("endpoint_id", eptInfo.id))
-	if err := ioutil.WriteFile(eptInfo.pppOptFile, []byte(pppCfg), 0644); err != nil {
-		log.G(d.ctx).Error("failed to create ppp options file", zap.String("network_id", netInfo.id),
-			zap.String("endpoint_id", eptInfo.id), zap.Any("config", xl2tpdCfg), zap.Error(err))
-		return nil, errors.Wrapf(err, "failed to create ppp options file for network %s, config is `%s`",
-			netInfo.id, xl2tpdCfg)
-	}
-
-	log.G(d.ctx).Info("adding xl2tp connection config", zap.String("network_id", eptInfo.networkID),
-		zap.String("endpoint_id", eptInfo.id), zap.Any("config", xl2tpdCfg))
-	if err := addCfgCmd.Run(); err != nil {
-		log.G(d.ctx).Error("failed to add xl2tpd config", zap.String("network_id", netInfo.id),
-			zap.String("endpoint_id", eptInfo.id), zap.Any("config", xl2tpdCfg), zap.Error(err))
-		return nil, errors.Wrapf(err, "failed to add xl2tpd connection config for network %s, config is `%s`",
-			netInfo.id, xl2tpdCfg)
-	}
-
-	var (
-		linkEvents        = make(chan netlink.LinkUpdate)
-		linkEventsStopper = make(chan struct{})
-		addrEvents        = make(chan netlink.AddrUpdate)
-		addrEventsStopper = make(chan struct{})
-	)
-	if err := netlink.LinkSubscribe(linkEvents, linkEventsStopper); err != nil {
-		log.G(d.ctx).Error("failed to subscribe to netlink", zap.String("network_id", eptInfo.networkID),
-			zap.String("endpoint_id", eptInfo.id), zap.Error(err))
-		return nil, errors.Wrapf(err, "failed to subscribe to netlink: %s", err)
-	}
-
-	if err := netlink.AddrSubscribe(addrEvents, addrEventsStopper); err != nil {
-		log.G(d.ctx).Error("failed to subscribe to netlink", zap.String("network_id", eptInfo.networkID),
-			zap.String("endpoint_id", eptInfo.id), zap.Error(err))
-		return nil, errors.Wrapf(err, "failed to subscribe to netlink: %s", err)
-	}
-
-	log.G(d.ctx).Info("setting up xl2tpd connection", zap.String("connection_name", eptInfo.сonnName),
-		zap.String("network_id", eptInfo.networkID), zap.String("endpoint_id", eptInfo.id))
-	if err := setupConnCmd.Run(); err != nil {
-		log.G(d.ctx).Error("xl2tpd failed to setup connection", zap.String("network_id", netInfo.id),
-			zap.Any("config", xl2tpdCfg), zap.Error(err))
-		return nil, errors.Wrapf(err, "failed to add xl2tpd config for network %s, config is `%s`",
-			netInfo.id, xl2tpdCfg)
-	}
-
-	var (
-		linkIndex int
-		inetAddr  string
-	)
-
-	linkTicker := time.NewTicker(time.Second * 5)
-	for {
-		var done bool
-
-		select {
-		case update := <-linkEvents:
-			if update.Attrs().Name == eptInfo.pppDevName {
-				linkIndex = update.Link.Attrs().Index
-				done = true
-			}
-		case <-linkTicker.C:
-			log.G(d.ctx).Error("failed to receive link update: timeout",
-				zap.String("network_id", netInfo.id), zap.Any("config", xl2tpdCfg))
-			return nil, errors.New("failed to receive link update: timeout")
-		}
-
-		if done {
-			break
-		}
-	}
-
-	linkEventsStopper <- struct{}{}
-
-	addrTicker := time.NewTicker(time.Second * 5)
-	for {
-		var done bool
-		select {
-		case update := <-addrEvents:
-			if update.LinkIndex == linkIndex {
-				inetAddr = update.LinkAddress.String()
-				done = true
-			}
-		case <-addrTicker.C:
-			log.G(d.ctx).Error("failed to receive addr update: timeout",
-				zap.String("network_id", netInfo.id), zap.Any("config", xl2tpdCfg))
-			return nil, errors.New("failed to receive addr update: timeout")
-		}
-
-		if done {
-			break
-		}
-	}
-
-	addrEventsStopper <- struct{}{}
-
-	netInfo.endpoints[eptInfo.id] = eptInfo
-
-	return &network.CreateEndpointResponse{
-		Interface: &network.EndpointInterface{Address: inetAddr},
+	return &network.JoinResponse{
+		InterfaceName: network.InterfaceName{SrcName: netInfo.endpoint.pppDevName, DstPrefix: "wut"},
 	}, nil
 }
 
@@ -270,12 +147,6 @@ func (d *L2TPDriver) EndpointInfo(request *network.InfoRequest) (*network.InfoRe
 	return &network.InfoResponse{Value: val}, nil
 }
 
-func (d *L2TPDriver) Join(request *network.JoinRequest) (*network.JoinResponse, error) {
-	log.G(d.ctx).Info("received Join request", zap.Any("request", request))
-	return nil, nil
-	//return &network.JoinResponse{DisableGatewayService: true, InterfaceName: network.InterfaceName{SrcName: "netname", DstPrefix: "pidor"}}, nil
-}
-
 func (d *L2TPDriver) Leave(request *network.LeaveRequest) error {
 	log.G(d.ctx).Info("received Leave request", zap.Any("request", request))
 	return nil
@@ -302,15 +173,16 @@ func (d *L2TPDriver) RevokeExternalConnectivity(request *network.RevokeExternalC
 }
 
 type networkInfo struct {
-	id       string
-	ipv4Data []*network.IPAMData
-	ipv6Data []*network.IPAMData
+	id         string
+	internalID string
+	ipv4Data   []*network.IPAMData
+	ipv6Data   []*network.IPAMData
 
 	lnsAddr     string
 	pppUsername string
 	pppPassword string
 
-	endpoints map[string]*endpointInfo
+	endpoint *endpointInfo
 }
 
 func (i *networkInfo) setup() error {
@@ -330,20 +202,23 @@ func (i *networkInfo) setup() error {
 }
 
 type endpointInfo struct {
-	id          string
-	networkID   string
-	lnsAddr     string
-	сonnName    string
-	pppDevName  string
-	pppOptFile  string
-	pppUsername string
-	pppPassword string
+	id                string
+	internalID        string
+	networkID         string
+	networkInternalID string
+	lnsAddr           string
+	connName          string
+	pppDevName        string
+	pppOptFile        string
+	pppUsername       string
+	pppPassword       string
+	assignedIP        string
 }
 
 func (i *endpointInfo) setup() error {
-	i.сonnName = i.id[:5] + "-connection"
-	i.pppDevName = "ppp" + i.id[:5]
-	i.pppOptFile = pppOptsDir + i.networkID[:5] + "." + i.id[:5] + ".client"
+	i.connName = i.internalID + "-connection"
+	i.pppDevName = ("ppp" + i.internalID)[:15]
+	i.pppOptFile = pppOptsDir + i.internalID + "." + ".client"
 
 	return nil
 }
@@ -376,4 +251,10 @@ func (i *endpointInfo) getXl2tpConfig() []string {
 		fmt.Sprintf("lns=%s", i.lnsAddr),
 		fmt.Sprintf("pppoptfile=%s", i.pppOptFile),
 	}
+}
+
+func GetMD5Hash(text string) string {
+	hasher := md5.New()
+	hasher.Write([]byte(text))
+	return hex.EncodeToString(hasher.Sum(nil))
 }
