@@ -855,7 +855,7 @@ func (m *Miner) connectToHub(endpoint string) {
 		return
 	}
 
-	log.G(m.ctx).Info("SUCCESS?")
+	log.G(m.ctx).Info("SUCCESS?", zap.Error(err))
 
 	defer conn.Close()
 

@@ -2,7 +2,6 @@ package npp
 
 import (
 	"context"
-	"fmt"
 	"net"
 
 	"github.com/libp2p/go-reuseport"
@@ -24,10 +23,10 @@ type options struct {
 }
 
 // TODO
-func newOptions(ctx context.Context, addr net.Addr) *options {
+func newOptions(ctx context.Context) *options {
 	return &options{
 		ctx:       ctx,
-		localAddr: addr,
+		localAddr: &net.TCPAddr{IP: net.IPv4zero}, // TODO: IPv6 ready? Huh.
 	}
 }
 
@@ -38,8 +37,7 @@ func newOptions(ctx context.Context, addr net.Addr) *options {
 // back to the old good plain TCP connection.
 func WithRendezvous(addr auth.Endpoint, credentials credentials.TransportCredentials) Option {
 	return func(o *options) error {
-		fmt.Printf("%s %s\n", o.localAddr.String(), addr.Endpoint)
-		conn, err := reuseport.Dial("tcp", o.localAddr.String(), addr.Endpoint)
+		conn, err := reuseport.Dial("tcp", "", addr.Endpoint)
 		if err != nil {
 			return err
 		}

@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/libp2p/go-reuseport"
@@ -42,12 +43,7 @@ type Listener struct {
 }
 
 func NewListener(ctx context.Context, addr string, options ...Option) (net.Listener, error) {
-	listener, err := reuseport.Listen(protocol, addr)
-	if err != nil {
-		return nil, err
-	}
-
-	opts := newOptions(ctx, listener.Addr())
+	opts := newOptions(ctx)
 
 	for _, o := range options {
 		if err := o(opts); err != nil {
@@ -57,13 +53,18 @@ func NewListener(ctx context.Context, addr string, options ...Option) (net.Liste
 
 	channel := make(chan connTuple, 1)
 
+	listener, err := reuseport.Listen(protocol, opts.localAddr.String())
+	if err != nil {
+		return nil, err
+	}
+
 	m := &Listener{
 		ctx:         ctx,
 		log:         opts.log,
 		client:      opts.client,
 		channel:     channel,
 		listener:    listener,
-		maxAttempts: 30,
+		maxAttempts: 5,
 		timeout:     10 * time.Second,
 	}
 
@@ -152,11 +153,21 @@ func (m *Listener) punch(addrs *sonm.PublishReply) (net.Conn, error) {
 	m.log.Info("punch #1", zap.Any("addrs", addrs))
 	pending := make(chan connTuple)
 
+	// An example of clean architecture (TM) of how to gracefully close a channel.
+	// Nah, just kidding. Fuck go.
+	wg := &sync.WaitGroup{}
+	wg.Add(1 + len(addrs.PrivateAddrs))
+	go func() {
+		wg.Wait()
+		close(pending)
+	}()
+
 	if addrs.PublicAddr.IsValid() {
 		go func() {
 			conn, err := m.punchAddr(ctx, addrs.PublicAddr)
 			m.log.Info("using NAT", zap.Any("addr", addrs.PublicAddr), zap.Error(err))
 			pending <- newConnTuple(conn, err)
+			wg.Done()
 		}()
 	}
 
@@ -165,6 +176,7 @@ func (m *Listener) punch(addrs *sonm.PublishReply) (net.Conn, error) {
 			conn, err := m.punchAddr(ctx, addr)
 			m.log.Info("using private address", zap.Any("addr", addr), zap.Error(err))
 			pending <- newConnTuple(conn, err)
+			wg.Done()
 		}()
 	}
 
@@ -173,7 +185,7 @@ func (m *Listener) punch(addrs *sonm.PublishReply) (net.Conn, error) {
 	go func() {
 		var errs []error
 		connected := false
-		for conn := range pending { // TODO: Hangs here.
+		for conn := range pending {
 			if conn.error != nil {
 				m.log.Info("failed to punch", zap.Error(conn.error))
 				errs = append(errs, conn.error)
@@ -189,12 +201,11 @@ func (m *Listener) punch(addrs *sonm.PublishReply) (net.Conn, error) {
 		}
 
 		if !connected {
-			waiter <- newConnTuple(nil, fmt.Errorf("failed to punch the network: all attempts has failed: %+v", errs))
+			waiter <- newConnTuple(nil, fmt.Errorf("failed to punch the network: all attempts has failed"))
 		}
 	}()
 
 	conn := <-waiter
-	m.log.Info("punched finally", zap.Stringer("addr", conn.RemoteAddr()))
 	return conn.unwrap()
 }
 

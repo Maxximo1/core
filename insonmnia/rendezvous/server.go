@@ -166,13 +166,12 @@ func (s *Server) Resolve(ctx context.Context, request *sonm.ConnectRequest) (*so
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case p := <-c:
-		response, err := newResolveReply(p)
-		if err != nil {
-			return nil, err
-		}
-
-		s.log.Debug("providing remote server endpoint(s)", zap.String("id", request.ID), zap.Any("response", response))
-		return response, nil
+		s.log.Info("providing remote server endpoint(s)",
+			zap.String("id", request.ID),
+			zap.Stringer("public_addr", p.Addr),
+			zap.Any("private_addrs", p.privateAddrs),
+		)
+		return newResolveReply(p)
 	}
 }
 
@@ -199,12 +198,11 @@ func (s *Server) Publish(ctx context.Context, request *sonm.PublishRequest) (*so
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case p := <-c:
-		response, err := newPublishReply(p)
-		if err != nil {
-			return nil, err
-		}
-
-		s.log.Info("providing remote client endpoint(s)", zap.String("id", ethAddr.String()), zap.Any("response", response))
+		s.log.Info("providing remote client endpoint(s)",
+			zap.String("id", ethAddr.String()),
+			zap.Stringer("public_addr", p.Addr),
+			zap.Any("private_addrs", p.privateAddrs),
+		)
 		return newPublishReply(p)
 	}
 }

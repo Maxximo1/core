@@ -25,9 +25,7 @@ type Dialer struct {
 
 // TODO
 func NewDialer(ctx context.Context, options ...Option) (*Dialer, error) {
-	opts := newOptions(ctx, &net.TCPAddr{
-		IP: net.IPv4(0, 0, 0, 0), // TODO: Hack.
-	})
+	opts := newOptions(ctx)
 
 	for _, o := range options {
 		if err := o(opts); err != nil {

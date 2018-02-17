@@ -1401,7 +1401,7 @@ func (h *Hub) Serve() error {
 			conn, err := h.minerListener.Accept()
 			if err != nil {
 				log.G(h.ctx).Error("NOT SUCCESS?", zap.Error(err))
-				return err
+				continue
 			}
 			log.G(h.ctx).Info("SUCCESS?")
 			go h.handleInterconnect(h.ctx, conn)
